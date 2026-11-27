@@ -1,5 +1,5 @@
 # Pemodelan Probability of Default dengan Regresi Logistik dan Implementasi Newton-Raphson
-Proyek ini memodelkan peluang nasabah kartu kredit gagal bayar (*probability of default*, PD) dan mengimplementasikan estimasinya dengan Newton-Raphson yang ditulis sendiri di R dan dicocokkan dengan 'glm()', bukan hanya memakai fungsi bawaan R. Mencakup seleksi variabel dengan Weight of Evidence (WoE) dan Information Value (IV), estimasi regresi logistik dengan metode Newton-Raphson yang ditulis sendiri, dan evaluasi pada data uji.
+Proyek ini memodelkan peluang nasabah kartu kredit gagal bayar (*probability of default*, PD) dan mengimplementasikan estimasinya dengan Newton-Raphson yang ditulis sendiri di R dan dicocokkan dengan `glm()`, bukan hanya memakai fungsi bawaan R. Mencakup seleksi variabel dengan Weight of Evidence (WoE) dan Information Value (IV), estimasi regresi logistik dengan metode Newton-Raphson yang ditulis sendiri, dan evaluasi pada data uji.
 
 **Penulis:** Hilmiya Fahimah, Program Studi Matematika, Universitas Jenderal Soedirman.
 
