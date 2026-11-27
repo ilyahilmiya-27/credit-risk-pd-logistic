@@ -1,0 +1,516 @@
+---
+title: "Credit Risk Modeling"
+subtitle: "Probability of Default Using Logistic Regression"
+author: "Hilmiya Fahimah"
+lang: id
+editor: visual
+format:
+  html:
+    theme: flatly
+    css: styles.css
+    toc: true
+    toc-location: left
+    toc-title: "Daftar Isi"
+    toc-depth: 2
+    number-sections: true
+    code-fold: true
+    code-summary: "Lihat Kode R"
+    code-tools: true
+    code-copy: true
+    embed-resources: true
+    smooth-scroll: true
+    fig-cap-location: bottom
+    link-external-newwindow: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| include: false
+# Data hasil proyek asli; tidak menjalankan ulang script sumber.
+train <- readRDS("data/train.rds")
+test <- readRDS("data/test.rds")
+df <- rbind(train, test)
+woe_train <- readRDS("data/woe_train.rds")
+woe_test <- readRDS("data/woe_test.rds")
+tabel_woe <- readRDS("data/tabel_woe.rds")
+woe_map <- readRDS("data/woe_map.rds")
+pilih <- readRDS("data/variabel_terpilih.rds")
+pilih_final <- readRDS("data/variabel_final.rds")
+beta_nr <- readRDS("data/beta_nr.rds")
+hasil <- readRDS("data/hasil_evaluasi.rds")
+tab_kal <- readRDS("data/tabel_kalibrasi.rds")
+stopifnot(!anyNA(woe_train), !anyNA(woe_test), length(beta_nr) == length(pilih_final)+1)
+pd_test <- as.vector(plogis(cbind(1, as.matrix(woe_test[, pilih_final])) %*% beta_nr))
+y_test <- woe_test$default
+navy <- "#294B66"
+teal <- "#168A83"
+orange <- "#CB8945"
+```
+
+# Ringkasan Eksekutif {.unnumbered}
+
+Proyek ini mengembangkan model regresi logistik untuk mengestimasi probabilitas gagal bayar (*Probability of Default*, PD) nasabah kartu kredit berdasarkan 30.000 observasi historis dari Taiwan. Transformasi *Weight of Evidence* (WoE), seleksi prediktor berdasarkan *Information Value* (IV), dan pemeriksaan multikolinearitas dilakukan menggunakan data latih. Estimasi parameter dilakukan dengan implementasi Newton-Raphson dan dibandingkan dengan fungsi `glm()` pada R.
+
+Model akhir menggunakan delapan prediktor dan menghasilkan AUC data uji sebesar **0,7557**, koefisien Gini **0,5114**, dan statistik KS **0,3955**. Rerata PD data uji sebesar 21,99%, mendekati proporsi gagal bayar aktual sebesar 22,12%, meskipun masih terdapat perbedaan kalibrasi pada beberapa kelompok risiko. Hasil ini menunjukkan kemampuan diskriminasi yang cukup baik untuk studi kasus pembelajaran, bukan validasi kelayakan model operasional perbankan.
+
+# Pendahuluan
+
+## Latar Belakang
+
+Penyaluran kredit merupakan salah satu kegiatan utama perbankan yang tidak terlepas dari risiko gagal bayar. Berdasarkan data Otoritas Jasa Keuangan (OJK, 2026), rasio *Non-Performing Loan* (NPL) gross perbankan Indonesia pada September 2026 tercatat sebesar 2,07%. Pengukuran, pemantauan, dan pengendalian risiko kredit diperlukan dalam mendukung pengelolaan risiko perbankan (Basel Committee on Banking Supervision, 2025).
+
+Salah satu pendekatan dalam pengukuran risiko kredit adalah estimasi *Probability of Default* (PD) menggunakan regresi logistik. Metode ini menghasilkan probabilitas gagal bayar berdasarkan karakteristik nasabah dan memungkinkan interpretasi parameter model. Regresi logistik masih menjadi pembanding yang kuat dalam penelitian prediksi risiko kredit. Menurut Seitshiro dan Govender (2024) model tersebut unggul pada data registri kredit perbankan komersial, meskipun transformasi WoE tidak meningkatkan kinerjanya pada data tersebut.
+
+Proyek ini menerapkan regresi logistik menggunakan dataset *Default of Credit Card Clients* (Yeh, 2009), melalui transformasi dan seleksi variabel, estimasi parameter dengan metode Newton-Raphson, serta evaluasi performa model. Analisis berfokus pada penerapan statistika dan komputasi matematis sebagai studi kasus risiko kredit.
+
+## Tujuan
+
+Proyek ini bertujuan untuk:
+
+1.  Mengeksplorasi karakteristik data nasabah kartu kredit dan distribusi status gagal bayar.
+2.  Menerapkan WoE dan IV dalam transformasi serta seleksi prediktor dan memeriksa multikolinearitas menggunakan *Variance Inflation Factor* (VIF).
+3.  Mengestimasi parameter regresi logistik menggunakan metode Newton-Raphson dan membandingkan hasilnya dengan `glm()` pada R.
+4.  Mengevaluasi performa model berdasarkan AUC, koefisien Gini, statistik KS, dan kalibrasi probabilitas gagal bayar.
+
+# Eksplorasi dan Persiapan Data
+
+## Deskripsi Dataset
+
+Dataset *Default of Credit Card Clients* diperoleh dari UCI Machine Learning Repository (Yeh, 2009) dengan lisensi CC BY 4.0. Dataset berisi 30.000 observasi nasabah kartu kredit di Taiwan, dengan riwayat pembayaran April–September 2005. Terdapat 25 kolom yang terdiri atas satu identitas, 23 kandidat prediktor awal, dan satu variabel respons. Variabel `default` menyatakan status gagal bayar pada bulan berikutnya: 1 untuk gagal bayar dan 0 untuk tidak gagal bayar.
+
+| Variabel | Keterangan |
+|:---|:---|
+| `ID` | Identitas observasi; bukan prediktor |
+| `LIMIT_BAL` | Batas kredit (NT\$) |
+| `SEX`, `EDUCATION`, `MARRIAGE`, `AGE` | Jenis kelamin, pendidikan, status pernikahan, usia |
+| `PAY_0`, `PAY_2`–`PAY_6` | Status pembayaran September hingga April 2005 |
+| `BILL_AMT1`–`BILL_AMT6` | Jumlah tagihan bulanan (NT\$) |
+| `PAY_AMT1`–`PAY_AMT6` | Jumlah pembayaran bulanan (NT\$) |
+| `default` | Status gagal bayar bulan berikutnya (0/1) |
+
+: Deskripsi variabel berdasarkan dokumentasi UCI dan penamaan pada script proyek.
+
+## Eksplorasi Data
+
+Pemeriksaan dataset asli menunjukkan tidak terdapat nilai kosong dan tidak terdapat duplikasi baris lengkap. Seluruh 30.000 identitas observasi bersifat unik. Jika ID diabaikan, terdapat 35 baris dengan kombinasi nilai yang berulang (setelah kemunculan pertama); hal ini tidak membuktikan adanya duplikasi nasabah, sehingga tidak ada baris yang dihapus. Sebanyak 6.636 nasabah (22,12%) mengalami gagal bayar, sedangkan 23.364 nasabah (77,88%) tidak mengalami gagal bayar. Distribusi tersebut menunjukkan ketidakseimbangan kelas, sehingga pembagian data perlu menjaga proporsi masing-masing kelas.
+
+```{r}
+#| label: fig-default
+#| fig-cap: "Distribusi status gagal bayar pada seluruh dataset"
+#| fig-width: 6.5
+#| fig-height: 3.6
+n_default <- table(factor(df$default, levels = c(0, 1)))
+bp <- barplot(100*prop.table(n_default), names.arg=c("Tidak gagal bayar", "Gagal bayar"), col=c(navy, orange), ylim=c(0, 100), ylab="Proporsi (%)", border=NA, las=1)
+text(bp, 100*prop.table(n_default)+4, labels=paste0(format(as.numeric(n_default), big.mark=".", scientific=FALSE), " (", format(round(100*prop.table(n_default),2), decimal.mark=","), "%)"), cex=.85)
+```
+
+Statistik deskriptif empat variabel numerik yang dipertimbangkan pada tahap transformasi WoE disajikan berikut. Statistik ini merupakan ringkasan tambahan yang dihitung dari data proyek.
+
+| Variabel    |     Rerata |    Median | Simpangan baku |  Minimum |  Maksimum |
+|:------------|-----------:|----------:|---------------:|---------:|----------:|
+| `LIMIT_BAL` | 167.484,32 |   140.000 |     129.747,66 |   10.000 | 1.000.000 |
+| `AGE`       |      35,49 |        34 |           9,22 |       21 |        79 |
+| `BILL_AMT1` |  51.223,33 | 22.381,50 |      73.635,86 | -165.580 |   964.511 |
+| `PAY_AMT1`  |   5.663,58 |     2.100 |      16.563,28 |        0 |   873.552 |
+
+: Statistik deskriptif seluruh observasi; variabel keuangan dalam NT\$ dan usia dalam tahun.
+
+Rerata tagihan dan pembayaran September lebih tinggi daripada mediannya, menunjukkan adanya nilai besar dan kecenderungan distribusi menceng ke kanan. Nilai tagihan negatif tercatat dalam dataset dan dipertahankan pada proyek ini; makna bisnis setiap nilai tersebut tidak diverifikasi lebih lanjut.
+
+Status pembayaran (PAY\_) dikodekan −1 untuk pembayaran tepat waktu dan 1 sampai 9 untuk keterlambatan; nilai −2 dan 0 yang muncul pada data tidak didefinisikan dalam dokumentasi UCI. Kolom bernama PAY_0 (September), PAY_2 (Agustus), dan seterusnya mundur sampai PAY_6 (April). Pada data latih, tingkat gagal bayar nilai −2 dan 0 hampir sama (PAY_0: 12,6% dan 12,8%), sedangkan nilai −1 berbeda (16,8% pada PAY_0 dan 15,7%–16,9% pada PAY_3–PAY_6). Karena itu −2 dan 0 digabung dan −1 dipertahankan. Pada seluruh data, nilai 1 hampir tidak muncul pada PAY_2–PAY_6 (28, 4, 2, 0, 0 observasi) padahal ada 3.688 pada PAY_0, sehingga nilai 1 dan 2 digabung pada kolom-kolom tersebut.
+
+## Pembersihan dan Transformasi Data
+
+Pembersihan dilakukan dengan mengelompokkan kategori pendidikan dan status pernikahan yang tidak dijelaskan dalam dokumentasi UCI ke kategori lainnya. Kolom `default payment next month` juga diubah namanya menjadi `default`. Tidak dilakukan imputasi atau penghapusan observasi.
+
+| Variabel    | Kode awal | Jumlah observasi yang diubah | Kode hasil  |
+|:------------|:----------|-----------------------------:|:------------|
+| `EDUCATION` | 0, 5, 6   |                          345 | 4 (lainnya) |
+| `MARRIAGE`  | 0         |                           54 | 3 (lainnya) |
+
+: Pengelompokan kategori pada script `01_data.R`.
+
+Pengelompokan tersebut merupakan keputusan prapemrosesan dan tidak menyatakan bahwa arti setiap kode awal telah diketahui. Transformasi WoE dibahas secara terpisah pada bagian metodologi.
+
+## Pembagian Data Latih dan Data Uji
+
+Dataset dibagi menjadi data latih (*train*) dan data uji (*test*) dengan proporsi 70:30 melalui pengambilan sampel terstratifikasi berdasarkan variabel `default`. Pengaturan `set.seed(123)` digunakan untuk mendukung reproduksibilitas pada lingkungan R yang sama. Data latih digunakan untuk menentukan batas pengelompokan, pemetaan WoE, seleksi prediktor, dan estimasi parameter. Data uji menggunakan pemetaan yang telah dibentuk pada data latih.
+
+| Dataset    | Tidak gagal bayar | Gagal bayar |  Total | Proporsi gagal bayar |
+|:-----------|------------------:|------------:|-------:|---------------------:|
+| Data latih |            16.355 |       4.645 | 21.000 |               22,12% |
+| Data uji   |             7.009 |       1.991 |  9.000 |               22,12% |
+| Total      |            23.364 |       6.636 | 30.000 |               22,12% |
+
+: Hasil pembagian data secara terstratifikasi.
+
+Proporsi kedua kelas tetap hampir sama pada data latih dan uji. Tidak terdapat nilai kosong pada hasil transformasi WoE kedua dataset. Pemisahan proses pembentukan transformasi dari evaluasi mengurangi risiko kebocoran informasi dari data uji.
+
+# Metodologi Analisis
+
+## Weight of Evidence (WoE)
+
+WoE merupakan transformasi yang mengukur perbandingan distribusi nasabah tidak gagal bayar (*good*) dan gagal bayar (*bad*) pada setiap kelompok prediktor. Pendekatan ini digunakan dalam pemodelan risiko kredit untuk mengubah informasi kategori menjadi nilai numerik (Seitshiro & Govender, 2024).
+
+Pada proyek ini, 11 dari 23 kandidat prediktor awal dipertimbangkan: `LIMIT_BAL`, `AGE`, `EDUCATION`, enam variabel `PAY`, `BILL_AMT1`, dan `PAY_AMT1`. Empat variabel numerik dikelompokkan menggunakan kuantil data latih (maksimal lima kelompok); `EDUCATION` menggunakan kategori yang telah dibersihkan. Untuk riwayat pembayaran, kode −2 dan 0 digabungkan, kode −1 dipertahankan, dan keterlambatan tiga bulan atau lebih digabungkan. Pada `PAY_0`, kode 1 dan 2 dipisahkan, sedangkan pada lima variabel pembayaran sebelumnya kedua kode tersebut digabungkan (alasan pengelompokan dijelaskan pada Bagian 2.2). `SEX` dan `MARRIAGE` tidak dimasukkan sebagai kandidat karena penggunaan jenis kelamin dan status pernikahan dalam keputusan kredit dapat bersifat diskriminatif. `BILL_AMT2`–`BILL_AMT6` dan `PAY_AMT2`–`PAY_AMT6` tidak dianalisis agar cakupan tetap terbatas; hanya `BILL_AMT1` dan `PAY_AMT1` yang dipertimbangkan.
+
+Misalkan $G_j$ dan $B_j$ menyatakan jumlah nasabah tidak gagal bayar dan gagal bayar pada kelompok ke-$j$, serta $m$ adalah jumlah kelompok yang terisi. Proyek ini menggunakan koreksi 0,5 pada setiap kelompok untuk menghindari pembagian dengan nol:
+
+$$
+g_j=\frac{G_j+0{,}5}{\sum_{h=1}^{m}G_h+0{,}5m},\qquad
+b_j=\frac{B_j+0{,}5}{\sum_{h=1}^{m}B_h+0{,}5m}.
+$$
+
+$$
+\operatorname{WoE}_j=\ln\left(\frac{g_j}{b_j}\right).
+$$ {#eq-woe}
+
+WoE positif menunjukkan kelompok yang relatif lebih banyak direpresentasikan oleh nasabah tidak gagal bayar, sedangkan WoE negatif menunjukkan kelompok yang relatif lebih banyak direpresentasikan oleh nasabah gagal bayar. Batas pengelompokan dan nilai WoE ditetapkan dari data latih, kemudian diterapkan apa adanya pada data uji tanpa dihitung ulang, sehingga tidak ada informasi dari data uji yang masuk ke dalam model.
+
+## Information Value (IV)
+
+IV merangkum daya pemisahan suatu prediktor terhadap dua kelas respons berdasarkan distribusi per kelompok. Rumus yang digunakan adalah:
+
+$$
+IV=\sum_{j=1}^{m}(g_j-b_j)\ln\left(\frac{g_j}{b_j}\right).
+$$ {#eq-iv}
+
+Nilai yang lebih besar menunjukkan pemisahan kelas univariat yang lebih kuat dalam data latih. IV tidak mengukur kontribusi independen prediktor setelah variabel lainnya dikendalikan. Secara matematis, IV dengan distribusi positif tersebut sama dengan jumlah dua divergensi Kullback–Leibler (divergensi Jeffreys):
+
+$$
+\begin{aligned}
+D_{KL}(g\Vert b)+D_{KL}(b\Vert g)
+&=\sum_j g_j\ln\frac{g_j}{b_j}+\sum_j b_j\ln\frac{b_j}{g_j}\\
+&=\sum_j(g_j-b_j)\ln\frac{g_j}{b_j}=IV.
+\end{aligned}
+$$
+
+Kesetaraan ini juga diperiksa untuk `PAY_0` pada script `03_woe_iv.R`.
+
+## Seleksi Variabel dan Uji Multikolinearitas
+
+Seleksi dilakukan dengan meninjau IV serta memeriksa korelasi dan multikolinearitas prediktor yang telah ditransformasi menjadi WoE. VIF mengukur peningkatan varians estimasi koefisien yang berkaitan dengan hubungan linear antarprediktor:
+
+$$
+VIF_j=\frac{1}{1-R_j^2},
+$$
+
+dengan $R_j^2$ adalah koefisien determinasi dari regresi prediktor ke-$j$ terhadap prediktor lainnya. Pada proyek ini, VIF diperoleh dari diagonal invers matriks korelasi dan nilai 5 digunakan sebagai ambang pemeriksaan. Ambang tersebut merupakan aturan praktis, bukan uji hipotesis formal.
+
+Sembilan prediktor ditetapkan sebagai kandidat regresi berdasarkan hasil eksplorasi IV; `AGE` dan `BILL_AMT1` tidak dimasukkan karena nilai IV relatif kecil. Script tidak menerapkan ambang IV otomatis. Model dengan dan tanpa `PAY_2` kemudian dibandingkan melalui AIC, BIC, dan uji rasio likelihood. Model akhir mengikuti pilihan pada script `06_newton_raphson.R`, yaitu model tanpa `PAY_2`.
+
+## Regresi Logistik
+
+Variabel respons $Y_i$ mengikuti model Bernoulli dengan probabilitas gagal bayar $p_i$. Untuk vektor prediktor WoE $\mathbf{x}_i$ yang memuat intersep dan vektor parameter $\boldsymbol\beta$, digunakan model:
+
+$$
+\eta_i=\mathbf{x}_i^T\boldsymbol\beta,\qquad
+p_i=P(Y_i=1\mid \mathbf{x}_i)=\frac{e^{\eta_i}}{1+e^{\eta_i}}.
+$$ {#eq-pd}
+
+Transformasi logit menghubungkan probabilitas dengan kombinasi linear prediktor:
+
+$$
+\begin{aligned}
+\frac{p_i}{1-p_i}&=e^{\eta_i},\\
+\ln\left(\frac{p_i}{1-p_i}\right)&=\eta_i=\mathbf{x}_i^T\boldsymbol\beta.
+\end{aligned}
+$$
+
+Parameter diestimasi melalui *Maximum Likelihood Estimation* (MLE). Dengan asumsi observasi independen bersyarat pada prediktor, fungsi likelihood dan log-likelihood adalah:
+
+$$
+L(\boldsymbol\beta)=\prod_{i=1}^n p_i^{y_i}(1-p_i)^{1-y_i},
+$$
+
+$$
+\begin{aligned}
+\ell(\boldsymbol\beta)&=\sum_{i=1}^n[y_i\ln p_i+(1-y_i)\ln(1-p_i)]\\
+&=\sum_{i=1}^n[y_i\eta_i-\ln(1+e^{\eta_i})].
+\end{aligned}
+$$ {#eq-ll}
+
+Maksimisasi log-likelihood regresi logistik umumnya memerlukan metode numerik (Pennsylvania State University, tanpa tahun-b).
+
+## Metode Newton-Raphson
+
+Turunan pertama dan kedua log-likelihood terhadap parameter diperoleh menggunakan $\partial p_i/\partial\eta_i=p_i(1-p_i)$:
+
+$$
+\begin{aligned}
+\mathbf{g}(\boldsymbol\beta)&=\nabla\ell(\boldsymbol\beta)=\mathbf{X}^T(\mathbf{y}-\mathbf{p}),\\
+\mathbf{H}(\boldsymbol\beta)&=\nabla^2\ell(\boldsymbol\beta)=-\mathbf{X}^T\mathbf{W}\mathbf{X},\\
+\mathbf{W}&=\operatorname{diag}\{p_i(1-p_i)\}.
+\end{aligned}
+$$
+
+Dengan pendekatan Taylor pada gradien di sekitar iterasi ke-$t$ dan menetapkan gradien pada solusi mendekati nol, diperoleh:
+
+$$
+\begin{aligned}
+\mathbf{0}&\approx\mathbf{g}(\boldsymbol\beta^{(t)})+\mathbf{H}(\boldsymbol\beta^{(t)})(\boldsymbol\beta^{(t+1)}-\boldsymbol\beta^{(t)}),\\
+\boldsymbol\beta^{(t+1)}&=\boldsymbol\beta^{(t)}-\mathbf{H}^{-1}\mathbf{g}\\
+&=\boldsymbol\beta^{(t)}+(\mathbf{X}^T\mathbf{W}\mathbf{X})^{-1}\mathbf{X}^T(\mathbf{y}-\mathbf{p}).
+\end{aligned}
+$$ {#eq-newton}
+
+Implementasi menggunakan parameter awal nol, maksimum 25 iterasi, dan kriteria berhenti berupa perubahan absolut maksimum parameter kurang dari $10^{-10}$. Fungsi `solve()` menyelesaikan sistem linear tanpa menghitung invers secara eksplisit pada langkah iterasi. Hasil dibandingkan dengan `glm()` yang menggunakan *iteratively reweighted least squares* (IRLS) sebagai metode standar (R Core Team, tanpa tahun). Untuk regresi logistik dengan link logit, langkah Newton-Raphson dan IRLS ekuivalen secara aljabar.
+
+# Hasil Pemodelan
+
+## Hasil Transformasi WoE dan IV
+
+| Variabel    | Jumlah kelompok |     IV | Kandidat regresi awal |
+|:------------|----------------:|-------:|:----------------------|
+| `PAY_0`     |               5 | 0,8983 | Ya                    |
+| `PAY_2`     |               4 | 0,5575 | Ya                    |
+| `PAY_3`     |               4 | 0,4269 | Ya                    |
+| `PAY_4`     |               4 | 0,3727 | Ya                    |
+| `PAY_5`     |               4 | 0,3511 | Ya                    |
+| `PAY_6`     |               4 | 0,2994 | Ya                    |
+| `LIMIT_BAL` |               5 | 0,1605 | Ya                    |
+| `PAY_AMT1`  |               5 | 0,1564 | Ya                    |
+| `EDUCATION` |               4 | 0,0382 | Ya                    |
+| `AGE`       |               5 | 0,0149 | Tidak                 |
+| `BILL_AMT1` |               5 | 0,0092 | Tidak                 |
+
+```{r}
+#| label: fig-iv
+#| fig-cap: "Information Value dari 11 kandidat prediktor pada data latih"
+#| fig-width: 7
+#| fig-height: 4.6
+iv <- sapply(tabel_woe, function(t) {
+  g <- (t$good+.5)/sum(t$good+.5)
+  b <- (t$bad+.5)/sum(t$bad+.5)
+  sum((g-b)*log(g/b))
+})
+iv <- sort(iv)
+old <- par(mar=c(4, 8, 1, 2))
+bp <- barplot(iv, horiz=TRUE, las=1, col=ifelse(names(iv)=="PAY_0", teal, navy), border=NA, xlim=c(0,1.05), xlab="Information Value", cex.names=.8)
+text(iv+.015, bp, format(round(iv,4), decimal.mark=","), pos=4, cex=.75)
+par(old)
+```
+
+`PAY_0` (status pembayaran September) memiliki IV tertinggi, yaitu 0,8983, diikuti `PAY_2`. Riwayat pembayaran merupakan kelompok informasi yang paling kuat dalam membedakan kedua kelas pada analisis univariat. IV `AGE` dan `BILL_AMT1` relatif kecil dibandingkan kandidat lain.
+
+| Kelompok `PAY_0` | Jumlah | Tidak gagal bayar | Gagal bayar | Default rate |     WoE |
+|:-----------------|-------:|------------------:|------------:|-------------:|--------:|
+| -2/0             | 12.229 |            10.670 |       1.559 |       12,75% |  0,6648 |
+| -1               |  3.994 |             3.325 |         669 |       16,75% |  0,3445 |
+| 1                |  2.563 |             1.697 |         866 |       33,79% | -0,5859 |
+| 2                |  1.887 |               575 |       1.312 |       69,53% | -2,0828 |
+| ≥3               |    327 |                88 |         239 |       73,09% | -2,2539 |
+
+: Hasil pengelompokan WoE `PAY_0` pada data train.
+
+```{r}
+#| label: fig-pay0
+#| fig-cap: "Proporsi gagal bayar aktual menurut kelompok status pembayaran bulan September"
+#| fig-width: 6.5
+#| fig-height: 3.8
+t0 <- tabel_woe$PAY_0
+rate <- 100*t0$bad/(t0$good+t0$bad)
+bp <- barplot(rate, names.arg=t0$kelompok, ylim=c(0,90), col=ifelse(rate>50,orange,navy), border=NA, ylab="Default rate (%)", xlab="Kelompok PAY_0", las=1)
+text(bp,rate+4,paste0(format(round(rate,2),decimal.mark=","),"%"),cex=.8)
+```
+
+Peningkatan keterlambatan pada September berkaitan dengan kenaikan proporsi gagal bayar bulan berikutnya. Pada kelompok keterlambatan dua bulan, proporsi gagal bayar mencapai 69,53%, jauh lebih tinggi dibandingkan kelompok -2/0 (12,75%). Ini merupakan hubungan empiris, bukan bukti kausal.
+
+## Hasil Seleksi Variabel
+
+Korelasi Spearman antarkolom status pembayaran sebelum transformasi berada pada kisaran 0,47–0,83; nilai tertinggi terdapat pada `PAY_5` dan `PAY_6`. Setelah transformasi WoE, pemeriksaan VIF pada sembilan kandidat menghasilkan nilai berikut.
+
+| Variabel    | VIF awal | VIF model akhir |
+|:------------|---------:|----------------:|
+| `PAY_0`     |     1,86 |            1,44 |
+| `PAY_2`     |     2,66 |               — |
+| `PAY_3`     |     2,32 |            1,92 |
+| `PAY_4`     |     2,43 |            2,43 |
+| `PAY_5`     |     2,61 |            2,60 |
+| `PAY_6`     |     1,97 |            1,96 |
+| `LIMIT_BAL` |     1,15 |            1,15 |
+| `PAY_AMT1`  |     1,23 |            1,13 |
+| `EDUCATION` |     1,05 |            1,05 |
+
+: VIF dihitung dari invers matriks korelasi WoE pada data latih.
+
+Seluruh VIF awal kurang dari 5, sehingga tidak ada variabel yang dihapus berdasarkan kriteria VIF. Namun, koefisien `PAY_2` pada model penuh bernilai positif (0,0935), berlawanan dengan arah negatif yang diharapkan dari pengkodean WoE good/bad. Karena koefisien multivariat bersifat kondisional, pembalikan arah ini tidak otomatis berarti variabel tersebut keliru atau model gagal.
+
+| Model                       |      AIC |      BIC | Deviance |
+|:----------------------------|---------:|---------:|---------:|
+| Penuh (9 prediktor)         | 18.318,0 | 18.397,5 | 18.298,0 |
+| Tanpa `PAY_2` (8 prediktor) | 18.322,2 | 18.393,7 | 18.304,2 |
+
+: Perbandingan model berdasarkan data latih; dihitung ulang dari model binomial.
+
+Uji rasio likelihood untuk model bersarang menghasilkan statistik 6,1887 dengan satu derajat bebas dan p-value 0,0129. Dengan demikian, model penuh lebih didukung oleh AIC dan uji rasio likelihood, sementara BIC lebih mendukung model tanpa `PAY_2`. Model akhir proyek mempertahankan delapan prediktor mengikutikeputusan pada tahap pemodelan; pilihan ini dapat dipahami sebagai kompromi antara kesederhanaan dan konsistensi arah koefisien, tetapi tidak dapat dinyatakan sebagai model yang secara statistik unggul berdasarkan semua kriteria. Karena keputusan tersebut dilakukan setelah peninjauan data latih, p-value digunakan sebagai informasi eksploratif.
+
+## Estimasi Parameter
+
+Estimasi Newton-Raphson dilakukan pada matriks desain berukuran 21.000 × 9, termasuk intersep. Riwayat iterasi Newton-Raphson disajikan berikut.
+
+| Iterasi | Log-likelihood sebelum pembaruan | Maksimum perubahan parameter |
+|--------:|---------------------------------:|-----------------------------:|
+|       1 |                     -14.556,0908 |                    0,9563215 |
+|       2 |                      -9.372,3502 |                    0,2447340 |
+|       3 |                      -9.156,8726 |                    0,0528126 |
+|       4 |                      -9.152,0801 |                    0,0027055 |
+|       5 |                      -9.152,0755 |                  0,000004685 |
+|       6 |                      -9.152,0755 | sekitar $1,00\times10^{-11}$ |
+
+: Riwayat iterasi Newton-Raphson.
+
+Pada iterasi keenam, perubahan parameter sudah memenuhi kriteria konvergensi. Log-likelihood akhir sebesar -9.152,0755. Nilai eigen minimum matriks informasi pada solusi sekitar 98,8989, menunjukkan matriks informasi positif definit pada solusi yang diperiksa.
+
+## Perbandingan Hasil Estimasi
+
+Tabel berikut membandingkan koefisien asli Newton-Raphson dengan hasil perhitungan ulang model binomial-logit menggunakan `glm()`. Keduanya mengestimasi model dan parameter yang sama.
+
+```{r}
+#| label: tbl-coef
+#| tbl-cap: "Perbandingan koefisien Newton-Raphson dan glm serta standard error"
+fit_glm <- glm(reformulate(pilih_final,response="default"),data=woe_train,family=binomial())
+X <- cbind(1,as.matrix(woe_train[,pilih_final]))
+p <- as.vector(plogis(X%*%beta_nr))
+info <- crossprod(X,X*(p*(1-p)))
+se <- sqrt(diag(solve(info)))
+knitr::kable(data.frame(Variabel=names(beta_nr),Newton_Raphson=as.numeric(beta_nr),GLM=as.numeric(coef(fit_glm)),SE_NR=se),digits=4,col.names=c("Variabel","Newton-Raphson","glm()","SE Newton-Raphson"),row.names=FALSE, format.args=list(decimal.mark=","))
+```
+
+Hasil Newton-Raphson yang tersimpan juga diperiksa secara independen melalui model binomial-logit berbasis IRLS. Koefisien pada kedua pendekatan sama hingga empat desimal, dan log-likelihood akhir yang diperoleh konsisten. Ini menunjukkan implementasi numerik menghasilkan solusi yang sesuai untuk model yang sama, bukan bahwa model pasti akurat pada populasi lain.
+
+## Interpretasi Model
+
+Seluruh koefisien prediktor pada model akhir bernilai negatif. Karena WoE menggunakan rasio good terhadap bad, peningkatan WoE berkaitan dengan penurunan log-odds gagal bayar setelah prediktor lain dikendalikan. Sebagai contoh, koefisien `PAY_0` sebesar -0,7573 menghasilkan *odds ratio* $e^{-0{,}7573}\approx0{,}469$ untuk kenaikan satu unit WoE. Artinya, odds gagal bayar menjadi sekitar 46,9% dari odds sebelumnya, dengan prediktor lain tetap. Perubahan ini berlaku pada skala WoE, bukan kenaikan satu bulan keterlambatan atau penurunan probabilitas sebesar 53,1 poin persentase.
+
+# Evaluasi Model
+
+## ROC Curve dan AUC
+
+Kurva ROC membandingkan *true positive rate* (TPR) dengan *false positive rate* (FPR) pada berbagai ambang prediksi. AUC dapat diinterpretasikan sebagai peluang model memberikan skor lebih tinggi kepada nasabah gagal bayar daripada nasabah tidak gagal bayar yang dipilih secara acak, dengan setengah bobot untuk skor yang sama. Pada script proyek, AUC dihitung menggunakan peringkat skor dan diperiksa menggunakan perbandingan pasangan (lihat juga dokumentasi scikit-learn developers, tanpa tahun).
+
+$$
+AUC=\frac{\sum_{i:y_i=1}R_i-n_1(n_1+1)/2}{n_1n_0},
+$$
+
+dengan $R_i$ adalah peringkat skor (peringkat rata-rata untuk nilai yang sama), serta $n_1$ dan $n_0$ masing-masing jumlah observasi gagal bayar dan tidak gagal bayar.
+
+| Dataset    |    AUC |   Gini |     KS |
+|:-----------|-------:|-------:|-------:|
+| Data latih | 0,7699 | 0,5398 | 0,4167 |
+| Data uji   | 0,7557 | 0,5114 | 0,3955 |
+
+: Metrik evaluasi pada data latih dan data uji.
+
+```{r}
+#| label: fig-roc
+#| fig-cap: "Kurva ROC pada data uji (skor yang sama dikelompokkan)"
+#| fig-width: 5.4
+#| fig-height: 5
+ord <- order(pd_test,decreasing=TRUE)
+last <- c(which(diff(pd_test[ord])!=0),length(ord))
+tpr <- c(0,cumsum(y_test[ord]==1)[last]/sum(y_test==1))
+fpr <- c(0,cumsum(y_test[ord]==0)[last]/sum(y_test==0))
+plot(fpr,tpr,type="l",lwd=2.5,col=navy,xlab="False positive rate",ylab="True positive rate",xlim=c(0,1),ylim=c(0,1),asp=1,las=1)
+abline(0,1,lty=2,col="gray60")
+legend("bottomright",legend=paste0("AUC = ",format(hasil$AUC[hasil$data=="test"],decimal.mark=",")),bty="n",text.col=navy)
+```
+
+AUC data uji sebesar 0,7557 berarti peluang pemeringkatan pasangan nasabah yang benar sekitar 75,57% (dengan perlakuan skor sama sebagaimana dijelaskan di atas). AUC bukan persentase klasifikasi yang benar pada suatu ambang tertentu. Selisih AUC data latih dan data uji sebesar 0,0142, menunjukkan penurunan diskriminasi yang relatif kecil pada pembagian data ini.
+
+## Koefisien Gini
+
+Koefisien Gini diskriminasi dihitung dari AUC:
+
+$$
+Gini=2\,AUC-1.
+$$
+
+Gini data uji sebesar 0,5114 menunjukkan daya pemisahan yang lebih baik daripada pemeringkatan acak (Gini = 0). Metrik ini merupakan transformasi AUC, bukan bukti evaluasi independen.
+
+## Statistik Kolmogorov-Smirnov (KS)
+
+KS mengukur selisih absolut maksimum antara fungsi distribusi kumulatif empiris skor nasabah tidak gagal bayar dan gagal bayar:
+
+$$
+KS=\sup_s |F_0(s)-F_1(s)|.
+$$
+
+Nilai KS data uji sebesar 0,3955 berarti jarak maksimum antara kedua distribusi kumulatif mencapai 39,55 poin persentase. Nilai tersebut menunjukkan adanya pemisahan distribusi skor, tetapi tidak menyatakan bahwa tingkat akurasi model sebesar 39,55%.
+
+## Kalibrasi Model
+
+Kalibrasi menilai kesesuaian probabilitas yang diprediksi dengan proporsi kejadian aktual (scikit-learn developers, tanpa tahun-a). Data uji dibagi menjadi sepuluh kelompok berdasarkan kuantil PD. Jumlah observasi per kelompok tidak selalu sama karena terdapat skor PD identik.
+
+```{r}
+#| label: tbl-calibration
+#| tbl-cap: "Kalibrasi PD pada data uji"
+knitr::kable(data.frame(Kelompok=tab_kal$kelompok,n=tab_kal$n,Prediksi=paste0(format(100*tab_kal$rerata_prediksi,nsmall=2,decimal.mark=","),"%"),Aktual=paste0(format(100*tab_kal$rerata_aktual,nsmall=2,decimal.mark=","),"%")),col.names=c("Kelompok","Jumlah","Rerata PD","Default aktual"),row.names=FALSE)
+```
+
+```{r}
+#| label: fig-calibration
+#| fig-cap: "Perbandingan rata-rata probabilitas prediksi dan proporsi gagal bayar aktual"
+#| fig-width: 5.5
+#| fig-height: 5
+plot(tab_kal$rerata_prediksi,tab_kal$rerata_aktual,type="b",pch=19,col=teal,lwd=2,xlim=c(0,1),ylim=c(0,1),xlab="Rerata PD prediksi",ylab="Proporsi gagal bayar aktual",asp=1,las=1)
+abline(0,1,lty=2,col="gray60")
+legend("topleft",legend=c("Model","Kalibrasi ideal"),col=c(teal,"gray60"),lty=c(1,2),pch=c(19,NA),bty="n",cex=.85)
+```
+
+Rerata PD data uji sebesar 21,99%, sementara proporsi gagal bayar aktual sebesar 22,12%. Selisih sekitar 0,13 poin persentase menunjukkan kesesuaian agregat yang dekat. Namun, kalibrasi kelompok tidak sempurna. Kelompok ke-8 memiliki rerata PD 23,28% dan gagal bayar aktual 27,33%, sehingga model meremehkan risiko sekitar 4,05 poin persentase. Pada kelompok ke-10, PD prediksi 71,38% melebihi kejadian aktual 68,22% sekitar 3,16 poin persentase. Oleh karena itu, kesesuaian agregat tidak cukup untuk menyimpulkan bahwa model terkalibrasi baik di seluruh rentang risiko.
+
+# Kesimpulan dan Temuan Utama
+
+1.  Dataset terdiri atas 30.000 nasabah tanpa nilai kosong dengan proporsi gagal bayar 22,12%. Pembagian terstratifikasi menghasilkan 21.000 data latih dan 9.000 data uji dengan proporsi kelas yang hampir sama. Pada status pembayaran (PAY\_), kode −2 dan 0 berperilaku mirip sedangkan −1 berbeda, dan nilai 1 hampir tidak muncul pada PAY_2–PAY_6; temuan ini mendasari pengelompokan WoE.
+2.  Analisis WoE dan IV menunjukkan bahwa status pembayaran terakhir (`PAY_0`) memiliki daya pemisahan univariat tertinggi (IV 0,8983). Seluruh sembilan kandidat regresi memiliki VIF di bawah 5.
+3.  Model akhir memuat delapan prediktor. `PAY_2` dikeluarkan karena koefisiennya bertanda positif (berlawanan dengan variabel lain) dan penurunan devians yang ditambahkannya relatif kecil (6,19). Keputusan ini tidak didukung seragam oleh kriteria seleksi (AIC mendukung model penuh, BIC mendukung model tanpa `PAY_2`) dan bukan akibat pelanggaran ambang VIF.
+4.  Implementasi Newton-Raphson mencapai konvergensi dalam enam iterasi dan menghasilkan koefisien yang sama dengan `glm()` hingga empat desimal.
+5.  Pada data uji, model menghasilkan AUC 0,7557, Gini 0,5114, dan KS 0,3955. Penurunan AUC dibanding data latih (0,7699) hanya 0,0142, sehingga tidak tampak overfitting berat. Rerata PD (21,99%) mendekati proporsi gagal bayar aktual (22,12%), tetapi kalibrasi per kelompok belum sempurna (misalnya kelompok ke-8: prediksi 23,28% vs aktual 27,33%).
+6.  Secara keseluruhan, model memiliki kemampuan diskriminasi yang cukup baik untuk studi kasus pembelajaran, dengan keterbatasan yang dijelaskan pada Bagian
+
+# Keterbatasan dan Pengembangan Model
+
+## Keterbatasan
+
+- **Data.** Data berasal dari nasabah kartu kredit di Taiwan tahun 2005, sehingga hasilnya tidak dapat digeneralisasi langsung ke nasabah Indonesia saat ini.
+- **Definisi gagal bayar.** Dokumentasi sumber tidak merinci definisi gagal bayar. Nilai IV PAY_0 yang sangat tinggi (0,8983) mungkin sebagian mencerminkan hubungan dekat antara status pembayaran terakhir dan definisi target tersebut, sehingga tidak boleh ditafsirkan sebagai hubungan kausal.
+- **Kode status pembayaran.** Nilai −2 dan 0 pada PAY\_ tidak didefinisikan dalam dokumentasi, sehingga penggabungannya merupakan keputusan empiris. Nilai 1 hampir tidak muncul pada PAY_2–PAY_6 dan penyebabnya tidak diketahui.
+- **Cakupan prediktor.** SEX dan MARRIAGE sengaja tidak dimasukkan karena pertimbangan etika. BILL_AMT2–BILL_AMT6 dan PAY_AMT2–PAY_AMT6 tidak dieksplorasi, sehingga informasi tambahan dari kolom tersebut belum diketahui.
+- **Pemilihan prediktor dan pengelompokan.** Kandidat prediktor dan pengelompokan WoE belum dibandingkan secara sistematis dengan alternatif lain. Model dengan WoE juga belum dibandingkan dengan model tanpa WoE, padahal Seitshiro dan Govender (2024) melaporkan bahwa transformasi WoE tidak selalu meningkatkan kinerja.
+- **Keputusan PAY_2.** PAY_2 dikeluarkan dari model akhir, tetapi keputusan ini tidak didukung seragam oleh seluruh kriteria: AIC dan uji rasio likelihood mendukung model penuh, sedangkan BIC mendukung model tanpa PAY_2.
+- **Validasi.** Evaluasi hanya memakai satu kali pembagian acak terstratifikasi (70:30), tanpa validasi silang, validasi lintas waktu, maupun populasi eksternal.
+- **Kalibrasi.** Kesesuaian agregat baik (rerata PD 21,99% vs 22,12%), tetapi kalibrasi per kelompok tidak sempurna. Pada kelompok ke-8 risiko diremehkan sekitar 4,05 poin persentase, dan pada kelompok ke-10 diprediksi lebih tinggi sekitar 3,16 poin persentase.
+- **Tujuan analisis.** Analisis ini merupakan portofolio pembelajaran dan tidak dimaksudkan sebagai model penilaian kredit yang siap digunakan secara operasional.
+
+## Pengembangan Model
+
+- Menerapkan validasi silang dengan transformasi WoE dibentuk ulang pada setiap fold.
+- Membandingkan model dengan dan tanpa WoE, serta dengan metode lain.
+- Mengeksplorasi BILL_AMT2–BILL_AMT6 dan PAY_AMT2–PAY_AMT6, serta fitur turunan seperti rasio tagihan terhadap batas kredit.
+- Melakukan kalibrasi pada data terpisah.
+- Mengkaji kewajaran prediktor demografis dan implikasi penggunaan model dalam keputusan kredit.
+
+# Dokumentasi Proyek {.unnumbered}
+
+Seluruh sintaks R, dataset, dan dokumentasi proses analisis tersedia pada repositori GitHub berikut: [Credit Risk – Probability of Default Modeling](https://github.com/ilyahilmiya-27/credit-risk-pd-logistic)
+
+# Referensi {.unnumbered}
+
+Basel Committee on Banking Supervision. (2025). *Principles for the management of credit risk*. Bank for International Settlements. [Dokumen resmi](https://www.bis.org/publications/202504-guidelines-principles-management-credit-risk).
+
+Otoritas Jasa Keuangan. (2026, 5 November). *Memperkuat ketahanan dan penegakan integritas sektor jasa keuangan untuk menjaga kepercayaan dan stabilitas sektor jasa keuangan*. [Siaran pers SP 219/OJK/DKPU/XI/2026](https://ojk.go.id/id/berita-dan-kegiatan/siaran-pers/Pages/RDKB-Oktober-2026.aspx).
+
+Pennsylvania State University. (tanpa tahun). *12.1 – Logistic regression*. STAT 462: Applied Regression Analysis. [Materi terbuka](https://online.stat.psu.edu/stat462/node/207/).
+
+R Core Team. (tanpa tahun-a). *Fitting generalized linear models*. R Documentation. [Dokumentasi glm](https://stat.ethz.ch/R-manual/R-devel/library/stats/html/glm.html).
+
+Scikit-learn developers. (tanpa tahun-b). *Probability calibration*. [Dokumentasi kalibrasi](https://scikit-learn.org/stable/modules/calibration.html).
+
+Scikit-learn developers. (tanpa tahun). *roc_auc_score*. [Dokumentasi AUC](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.roc_auc_score.html).
+
+Seitshiro, M. B., & Govender, S. (2024). Credit risk prediction with and without weights of evidence using quantitative learning models. *Cogent Economics & Finance, 12*(1), 2338971. <https://doi.org/10.1080/23322039.2024.2338971>.
+
+Yeh, I. (2009). *Default of credit card clients* \[Dataset\]. UCI Machine Learning Repository. <https://doi.org/10.24432/C55S3H>.
